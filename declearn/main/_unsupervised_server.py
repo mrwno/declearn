@@ -122,8 +122,7 @@ class UnsupervisedFederatedServer:
         self._best = None  # type: Optional[Vector]
         # Set up a private attribute to prevent redundant weights sharing.
         self._clients_holding_latest_model = set()  # type: Set[str]
-        # Set up the global centroid.
-        self._centroid = None  # a determiner
+        
 
 
     @staticmethod
@@ -458,7 +457,7 @@ class UnsupervisedFederatedServer:
         # Set up the base training request.
         msg_light = messaging.TrainRequest( #peut etre rajouter un type de message
             round_i=round_i,
-            weights=self._centroid, #? 
+            weights=self.model.get_weights(),
             aux_var=self.optim.collect_aux_var(),
             **train_cfg.message_params,
         )
@@ -480,7 +479,9 @@ class UnsupervisedFederatedServer:
         """
         # Aggregate the client-wise results.
         # étape FKM - Agregation (ligne 8 et 9)
-        # Create new centroid to send to clients.
+
+        # Create new centroid to send to clients By using apply_updates
+        self.model.apply_updates(XXX) # Ici on applique les updates
         # étape FKM - kmeans pondéré (ligne 10)
 
 
