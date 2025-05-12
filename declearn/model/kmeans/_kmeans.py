@@ -177,7 +177,7 @@ class FederatedKMeansModel(Model):
         weighted_sum = np.sum(client_centroids * client_counts[:, :, None], axis=0)
         self.centroids = weighted_sum / total_counts 
 
-        # 2. Calculate maximum centroid change (L2 norm)
+        # Calculate maximum centroid change (L2 norm)
         self.delta = np.max(np.linalg.norm(self.centroids - old_centroids, axis=1))
 
     def compute_batch_predictions(self, batch: Any) -> np.ndarray:
@@ -196,6 +196,49 @@ class FederatedKMeansModel(Model):
         X = batch[0]
         distances = np.linalg.norm(X[:, None] - self.centroids, axis=2)
         return np.argmin(distances, axis=1)
+
+    def local_kmeans_iteration(self, X: np.ndarray) -> Dict[str, np.ndarray]:
+        """
+        Perform one local K-Means iteration: assign data points to current centroids,
+        remove empty clusters, and run one update step using non-empty centroids.
+
+        Parameters
+        ----------
+        X : np.ndarray
+            Local client data, shape = (n_samples, n_features)
+
+        Returns
+        -------
+        dict
+            "centroids": np.ndarray of updated cluster centers (shape = (k', n_features))
+            "counts": np.ndarray of sample counts per cluster (shape = (k',))
+        """
+        if self.centroids is None:
+            raise ValueError("Centroids must be initialized before running local iteration.")
+
+        # line 14 of the FKM paper
+        distances = np.linalg.norm(X[:, None] - self.centroids, axis=2)
+        labels = np.argmin(distances, axis=1)
+
+        # lines 15-1È of the FKM paper
+        new_centroids = []
+        new_counts = []
+        for i in range(self.n_clusters):
+            mask = labels == i
+            count = np.sum(mask)
+            if count > 0:
+                new_centroids.append(np.mean(X[mask], axis=0))
+                new_counts.append(count)
+        
+        new_centroids = np.array(new_centroids)
+        new_counts = np.array(new_counts)
+
+        
+        self.centroids = new_centroids
+        self.n_clusters = len(new_centroids)
+
+        return {"centroids": new_centroids, "counts": new_counts}
+
 
     @property
     def converged(self) -> bool:

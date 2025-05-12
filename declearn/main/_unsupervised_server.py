@@ -481,8 +481,8 @@ class UnsupervisedFederatedServer:
         # étape FKM - Agregation (ligne 8 et 9)
 
         # Create new centroid to send to clients By using apply_updates
-        self.model.apply_updates(XXX) # Ici on applique les updates
-        # étape FKM - kmeans pondéré (ligne 10)
+        # Line 10 of the FKM paper, boucle ? 
+        self.model.apply_updates(XXX) 
 
 
     async def stop_training(

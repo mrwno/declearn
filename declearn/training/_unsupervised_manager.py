@@ -19,6 +19,7 @@
 
 import logging
 from typing import Any, Dict, List, Optional, Tuple, Union
+import time
 
 import numpy as np
 import tqdm
@@ -183,13 +184,15 @@ class UnsupervisedTrainingManager:
         start_time = time.time()
 
         self.logger.info("Applying server updates to local objects.")
+        # Line 13 of the FKM paper
         if message.weights is None:
             start_weights = self.model.get_weights(trainable=True) # recupere les centroides si pas ds le message
         else:
             start_weights = message.weights
             self.model.set_weights(start_weights, trainable=True) #remplace les centroides du modele par ceux du message
         
-        # Faire ici les étapes 14 à 18
+        # Line 14 of the FKM paper
+        updates = self.model.local_kmeans_iteration(self.train_data)
 
         # Train under instructed effort constraints.
         params = message.n_epoch, message.n_steps, message.timeout
