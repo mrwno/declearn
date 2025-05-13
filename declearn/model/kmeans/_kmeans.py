@@ -158,27 +158,55 @@ class FederatedKMeansModel(Model):
         # Return S_i and C_i from FKM paper
         return {"centroids": centroids, "counts": counts}
 
-    def apply_updates(self, updates: Dict[str, np.ndarray]) -> None:
-        """Update centroids and compute convergence delta.
-        Corresponding to line 10 of the FKM paper.
+    def apply_updates(
+        self,
+        C_l: np.ndarray,  # Pre-concatenated list of all local centroids (shape: [M, n_features])
+        S_l: np.ndarray,   # Pre-concatenated list of corresponding cluster weights (shape: [M])
+    ) -> None:
+        """Perform weighted K-means clustering on pre-aggregated client centroids.
+        
         Parameters
         ----------
-        updates : dict
-            Aggregated cluster statistics from all clients
+        C_l : np.ndarray
+            All client centroids concatenated into a single array.
+            Each row represents a centroid from any client.
+        S_l : np.ndarray
+            Corresponding cluster weights (typically sample counts) concatenated.
+            Used to weight centroids during aggregation.
         """
-        old_centroids = self.centroids.copy() if self.centroids is not None else None
+        
+        current_centroids = self.centroids.copy() if self.centroids is not None else None
+        delta = np.inf
 
-        # Concatenate updates from all clients
-        client_centroids = updates["centroids"]
-        client_counts = updates["counts"] 
+        if len(C_l) != len(S_l):
+            raise ValueError("C_l and S_l must have same number of elements")
+        if len(C_l) == 0:
+            return
 
-        # Apply updates to centroids
-        total_counts = np.sum(client_counts, axis=0)[:, None] + 1e-8  
-        weighted_sum = np.sum(client_centroids * client_counts[:, :, None], axis=0)
-        self.centroids = weighted_sum / total_counts 
+        # While loop until convergence
+        while delta >= self.tol:
+            # Calculate disances
+            distances = np.linalg.norm(C_l[:, None] - current_centroids, axis=2)
+            # Assign each centroid to the nearest global centroid
+            assignments = np.argmin(distances, axis=1)
+            
+            # Update centroids
+            new_centroids = np.zeros_like(current_centroids)
+            for k in range(self.n_clusters):
+                mask = (assignments == k)
+                if np.sum(mask) == 0:
+                    new_centroids[k] = current_centroids[k]
+                    continue
+                weights = S_l[mask]
+                weighted_sum = np.sum(C_l[mask] * weights[:, None], axis=0)
+                total_weight = np.sum(weights)
+                new_centroids[k] = weighted_sum / total_weight
 
-        # Calculate maximum centroid change (L2 norm)
-        self.delta = np.max(np.linalg.norm(self.centroids - old_centroids, axis=1))
+            delta = np.max(np.linalg.norm(new_centroids - current_centroids, axis=1))
+            current_centroids = new_centroids
+
+        self.centroids = current_centroids
+        self.delta = delta
 
     def compute_batch_predictions(self, batch: Any) -> np.ndarray:
         """Predict cluster assignments for a batch of data.
@@ -220,7 +248,7 @@ class FederatedKMeansModel(Model):
         distances = np.linalg.norm(X[:, None] - self.centroids, axis=2)
         labels = np.argmin(distances, axis=1)
 
-        # lines 15-1È of the FKM paper
+        # lines 15-16 of the FKM paper
         new_centroids = []
         new_counts = []
         for i in range(self.n_clusters):
