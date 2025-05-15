@@ -246,3 +246,5 @@ class TrainReply(Message):
         data["updates"] = self.updates
         data["aux_var"] = self.aux_var
         return data
+
+# Creer mes classes de messages pour le kmeans

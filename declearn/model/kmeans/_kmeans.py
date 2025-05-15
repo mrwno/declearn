@@ -20,6 +20,8 @@
 from typing import Any, Dict, Optional, Set
 import numpy as np
 from declearn.model.api import Model
+from declearn.model.api import Vector
+
 from declearn.data_info import aggregate_data_info
 from declearn.utils import register_type
 
@@ -70,7 +72,7 @@ class FederatedKMeansModel(Model):
         ValueError
             If an unsupported initialization method is provided.
         """
-        super().__init__()
+        super().__init__(model=None)
         self.n_clusters = n_clusters
         self.init_method = init_method
         self.tol = tol
@@ -110,103 +112,90 @@ class FederatedKMeansModel(Model):
             # Not yet implemented
             raise NotImplementedError("K-means++ initialization is not yet implemented.")
 
-    def get_weights(self, trainable: bool = False) -> np.ndarray:
+    def get_centroids(self, trainable: bool = False) -> np.ndarray:
         """Return current centroids as model weights."""
         return self.centroids.copy() if self.centroids is not None else None
     
-    def set_weights(self, weights: np.ndarray, trainable: bool = False) -> None:
+    def set_centroids(self, centroids: np.ndarray, trainable: bool = False) -> None:
         """Update model weights (centroids) with provided values."""
-        self.centroids = weights.copy()
+        self.centroids = centroids.copy()
 
-    def compute_batch_gradients(self, batch: Any, max_norm: Optional[float] = None) -> Dict[str, np.ndarray]:
+    def compute_kmeans(self, data: Any, weights: Any, client: bool, ) -> Dict[str, np.ndarray]:
         """Compute cluster statistics (sums and counts) for the **entire dataset** 
-        (no batches), as required by Swier Garst's paper.
-        Corresdponds to line 17 of the FKM paper.
+        ,as required by Swier Garst's paper.
         Parameters
         ----------
-        batch : tuple
+        data : tuple
             Input data batch containing features as first element
             **Note:** This method processes the **entire dataset at once** 
             (not batches) to comply with the paper's algorithm.
-        max_norm : float or None, optional
-            Unused parameter (maintained for API compatibility)
-
         Returns
         -------
         dict
             Contains "centroids" (updated cluster centers) and "counts" (cluster sizes).
         """
-        X = batch[0]  # Input features shape=(batch_size, n_features)
+        if data is None:
+            raise ValueError("Data cannot be None.")
         
-        # 1. Compute distances between samples and centroids
-        distances = np.linalg.norm(X[:, None] - self.centroids, axis=2)
-        
-        # 2. Assign samples to nearest clusters
-        labels = np.argmin(distances, axis=1)
-        
-        # 3. Calculate cluster sums and counts
-        sums = np.zeros_like(self.centroids)
-        counts = np.zeros(self.n_clusters)
-        
-        for k in range(self.n_clusters):
-            mask = (labels == k)
-            sums[k] = np.sum(X[mask], axis=0)
-            counts[k] = np.sum(mask)
+        X = data
 
-        counts_safe = counts[:, None] + 1e-8  
-        centroids = sums / counts_safe
-        # Return S_i and C_i from FKM paper
-        return {"centroids": centroids, "counts": counts}
-
-    def apply_updates(
-        self,
-        C_l: np.ndarray,  # Pre-concatenated list of all local centroids (shape: [M, n_features])
-        S_l: np.ndarray,   # Pre-concatenated list of corresponding cluster weights (shape: [M])
-    ) -> None:
-        """Perform weighted K-means clustering on pre-aggregated client centroids.
-        
-        Parameters
-        ----------
-        C_l : np.ndarray
-            All client centroids concatenated into a single array.
-            Each row represents a centroid from any client.
-        S_l : np.ndarray
-            Corresponding cluster weights (typically sample counts) concatenated.
-            Used to weight centroids during aggregation.
-        """
-        
-        current_centroids = self.centroids.copy() if self.centroids is not None else None
-        delta = np.inf
-
-        if len(C_l) != len(S_l):
-            raise ValueError("C_l and S_l must have same number of elements")
-        if len(C_l) == 0:
-            return
-
-        # While loop until convergence
-        while delta >= self.tol:
-            # Calculate disances
-            distances = np.linalg.norm(C_l[:, None] - current_centroids, axis=2)
-            # Assign each centroid to the nearest global centroid
-            assignments = np.argmin(distances, axis=1)
+        if client:
+            # Client-side: centroids are updated outside of this function (line 13)
+            current_centroids = self.centroids.copy() if self.centroids is not None else None
+            # Client must have initialized centroids
+            if current_centroids is None:
+                raise ValueError("Centroids must be initialized before applying updates.")
+            # Put weights to 1 for client-side
+            weights = np.ones(X.shape[0])
+        else:
+        # Server-side: need to initialize centroids
+            # Choose self.n_clusters random data points as centroids
+            indices = np.random.choice(X.shape[0], self.n_clusters, replace=False)
+            self.centroids = X[indices]
+            current_centroids = self.centroids.copy()
+            # Check that data and weights have the same number of elements
+            if len(data) != len(weights):
+                raise ValueError("Parameters 'data' and 'weights' must have the same number of elements.")
             
+        delta = np.inf
+        # if a centroid is not used
+        counts = np.zeros(self.n_clusters)
+
+        while delta >= self.tol:
+            # Calculate distances
+            distances = np.linalg.norm(data[:, None] - current_centroids, axis=2)
+            # Assign each datapoint to the nearest centroid
+            labels = np.argmin(distances, axis=1)
             # Update centroids
             new_centroids = np.zeros_like(current_centroids)
             for k in range(self.n_clusters):
-                mask = (assignments == k)
-                if np.sum(mask) == 0:
+                mask = (labels == k)
+                counts[k] = np.sum(mask)
+                if counts[k] == 0:
                     new_centroids[k] = current_centroids[k]
                     continue
-                weights = S_l[mask]
-                weighted_sum = np.sum(C_l[mask] * weights[:, None], axis=0)
-                total_weight = np.sum(weights)
-                new_centroids[k] = weighted_sum / total_weight
+                weights_masked = weights[mask]    
+                new_centroids[k] = np.average(X[mask], axis=0, weights=weights_masked)
 
             delta = np.max(np.linalg.norm(new_centroids - current_centroids, axis=1))
             current_centroids = new_centroids
+            if client:
+                break
 
-        self.centroids = current_centroids
-        self.delta = delta
+        # Filter out empty clusters for client-side
+        if client:
+            non_empty = counts > 0
+            final_centroids = current_centroids[non_empty]
+            final_counts = counts[non_empty]
+        else:
+            final_centroids = current_centroids
+            final_counts = counts
+
+        self.centroids = final_centroids
+        # Return C_i and N_i
+        return {"centroids": final_centroids, "counts": final_counts}
+
+ 
 
     def compute_batch_predictions(self, batch: Any) -> np.ndarray:
         """Predict cluster assignments for a batch of data.
@@ -224,48 +213,42 @@ class FederatedKMeansModel(Model):
         X = batch[0]
         distances = np.linalg.norm(X[:, None] - self.centroids, axis=2)
         return np.argmin(distances, axis=1)
+    
+    #################################
 
-    def local_kmeans_iteration(self, X: np.ndarray) -> Dict[str, np.ndarray]:
-        """
-        Perform one local K-Means iteration: assign data points to current centroids,
-        remove empty clusters, and run one update step using non-empty centroids.
+    # Functions required from Model API - AI generated
+    # ToDo + change comments from functions
+    def get_weights(self, trainable: bool = False) -> Vector:
+        return Vector.from_array(self.centroids.copy()) if self.centroids is not None else None
+    
+    def set_weights(self, weights: Vector, trainable: bool = False) -> None:
+        self.centroids = weights.coefs.copy()
 
-        Parameters
-        ----------
-        X : np.ndarray
-            Local client data, shape = (n_samples, n_features)
+    def compute_batch_gradients(self, batch: Any, max_norm: Optional[float] = None) -> Dict[str, Vector]:
+        """Wrapper pour compute_kmeans (nécessaire pour l'API DecLearn)."""
+        result = self.compute_kmeans(batch[0], None, client=True)
+        return {
+            "centroids": Vector.from_array(result["centroids"]),
+            "counts": Vector.from_array(result["counts"])
+        }
 
-        Returns
-        -------
-        dict
-            "centroids": np.ndarray of updated cluster centers (shape = (k', n_features))
-            "counts": np.ndarray of sample counts per cluster (shape = (k',))
-        """
-        if self.centroids is None:
-            raise ValueError("Centroids must be initialized before running local iteration.")
+    def apply_updates(self, updates: Dict[str, Vector]) -> None:
+        """Mise à jour des centroïdes (nécessaire pour l'API DecLearn)."""
+        centroids = updates["centroids"].coefs
+        self.centroids = centroids.copy()
 
-        # line 14 of the FKM paper
-        distances = np.linalg.norm(X[:, None] - self.centroids, axis=2)
-        labels = np.argmin(distances, axis=1)
+    # 2. Ajouter des méthodes factices pour le reste de l'API
+    def loss_function(self, y_true: Any, y_pred: Any) -> Any:
+        raise NotImplementedError("Not used in K-means")
+    
+    @property
+    def device_policy(self) -> Any:
+        return "cpu"
 
-        # lines 15-16 of the FKM paper
-        new_centroids = []
-        new_counts = []
-        for i in range(self.n_clusters):
-            mask = labels == i
-            count = np.sum(mask)
-            if count > 0:
-                new_centroids.append(np.mean(X[mask], axis=0))
-                new_counts.append(count)
-        
-        new_centroids = np.array(new_centroids)
-        new_counts = np.array(new_counts)
-
-        
-        self.centroids = new_centroids
-        self.n_clusters = len(new_centroids)
-
-        return {"centroids": new_centroids, "counts": new_counts}
+    def update_device_policy(self, device: str) -> None:
+        pass
+    
+    #############################
 
 
     @property

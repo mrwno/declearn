@@ -36,7 +36,7 @@ from declearn.dataset import Dataset
 from declearn.fairness.api import FairnessControllerClient
 from declearn.main.utils import Checkpointer
 from declearn.messaging import Message, SerializedMessage
-from declearn.training import TrainingManager
+from declearn.training import UnsupervisedTrainingManager
 from declearn.secagg import parse_secagg_config_client
 from declearn.secagg.api import Encrypter, SecaggConfigClient, SecaggSetupQuery
 from declearn.secagg import messaging as secagg_messaging
@@ -48,7 +48,7 @@ __all__ = [
 ]
 
 
-class FederatedClient:
+class UnsupervisedFederatedClient:
     """Client-side Unsupervised Federated Learning orchestrating class."""
 
     # one-too-many attribute; pylint: disable=too-many-instance-attributes
@@ -123,7 +123,7 @@ class FederatedClient:
         
         self.verbose = bool(verbose)
         # Create slots that are (opt.) populated during initialization.
-        self.trainmanager = None  # type: Optional[TrainingManager]
+        self.trainmanager = None  # type: Optional[UnsupervisedTrainingManager]
         self.fairness = None  # type: Optional[FairnessControllerClient]
 
     @staticmethod
@@ -280,7 +280,7 @@ class FederatedClient:
         
         # Perform initialization, catching errors to report them to the server.
         try:
-            self.trainmanager = TrainingManager(
+            self.trainmanager = UnsupervisedTrainingManager(
                 model=message.model,
                 optim=message.optim,
                 aggrg=message.aggrg,
