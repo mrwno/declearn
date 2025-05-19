@@ -34,12 +34,8 @@ from declearn.communication.utils import (
 )
 from declearn.dataset import Dataset
 from declearn.fairness.api import FairnessControllerClient
-from declearn.main.utils import Checkpointer
 from declearn.messaging import Message, SerializedMessage
 from declearn.training import UnsupervisedTrainingManager
-from declearn.secagg import parse_secagg_config_client
-from declearn.secagg.api import Encrypter, SecaggConfigClient, SecaggSetupQuery
-from declearn.secagg import messaging as secagg_messaging
 from declearn.utils import LOGGING_LEVEL_MAJOR, get_logger
 
 
@@ -77,19 +73,6 @@ class UnsupervisedFederatedClient:
             Optional Dataset instance wrapping validation data.
             If None, run evaluation rounds over `train_data`.
             (DEPRECATED) May be a path to a JSON dump file.
-        checkpoint: Checkpointer or dict or str or None, default=None
-            Optional Checkpointer instance or instantiation dict to be
-            used so as to save round-wise model, optimizer and metrics.
-            If a single string is provided, treat it as the checkpoint
-            folder path and use default values for other parameters.
-        secagg: SecaggConfigClient or dict or None, default=None
-            Optional SecAgg config and setup controller
-            or dict of kwargs to set one up.
-        share_metrics: bool, default=True
-            Whether to share evaluation metrics with the server,
-            or save them locally and only send the model's loss.
-            This may prevent information leakage, e.g. as to the
-            local distribution of target labels or values.
         logger: logging.Logger or str or None, default=None,
             Logger to use, or name of a logger to set up with
             `declearn.utils.get_logger`.

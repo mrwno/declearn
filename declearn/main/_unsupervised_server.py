@@ -32,25 +32,16 @@ from declearn import messaging
 from declearn.communication import NetworkServerConfig
 from declearn.communication.api import NetworkServer
 from declearn.main.config import (
-    EvaluateConfig,
-    FairnessConfig,
     FLOptimConfig,
     FLRunConfig,
     TrainingConfig,
 )
 from declearn.main.utils import (
     AggregationError,
-    Checkpointer,
-    EarlyStopping,
     aggregate_clients_data_info,
 )
 from declearn.metrics import MetricInputType, MetricSet
-from declearn.metrics._mean import MeanState
 from declearn.model.api import Model, Vector
-from declearn.optimizer.modules import AuxVar
-from declearn.secagg import messaging as secagg_messaging
-from declearn.secagg import parse_secagg_config_server
-from declearn.secagg.api import Decrypter, SecaggConfigServer
 from declearn.utils import deserialize_object, get_logger
 
 
@@ -71,8 +62,6 @@ class UnsupervisedFederatedServer:
         self,
         model: Union[Model, str, Dict[str, Any]],
         netwk: Union[NetworkServer, NetworkServerConfig, Dict[str, Any], str],
-        optim: Union[FLOptimConfig, str, Dict[str, Any]],
-        metrics: Union[MetricSet, List[MetricInputType], None] = None,
         logger: Union[logging.Logger, str, None] = None,
     ) -> None:
         """Instantiate the orchestrating server for a federated learning task.
@@ -87,16 +76,6 @@ class UnsupervisedFederatedServer:
             dict, dataclass or path to a TOML file enabling its instantiation.
             In the latter three cases, the object's default logger will
             be set to that of this `FederatedServer`.
-        optim: FLOptimConfig or dict or str
-            FLOptimConfig instance or instantiation dict (using
-            the `from_params` method) or TOML configuration file path.
-            This object specifies the optimizers to use by the clients
-            and the server, as well as the client-updates aggregator.
-        metrics: MetricSet or list[MetricInputType] or None, default=None
-            MetricSet instance or list of Metric instances and/or specs
-            to wrap into one, defining evaluation metrics to compute in
-            addition to the model's loss.
-            If None, only compute and report the model's loss.
         logger: logging.Logger or str or None, default=None,
             Logger to use, or name of a logger to set up with
             `declearn.utils.get_logger`. If None, use `type(self)`.
@@ -110,18 +89,10 @@ class UnsupervisedFederatedServer:
         self.model = self._parse_model(model)
         # Assign the wrapped NetworkServer.
         self.netwk = self._parse_netwk(netwk, logger=self.logger)
-        # Assign the wrapped FLOptimConfig.
-        optim = self._parse_optim(optim)
-        self.aggrg = optim.aggregator
-        self.optim = optim.server_opt
-        self.c_opt = optim.client_opt
-        # Assign the wrapped MetricSet.
-        self.metrics = MetricSet.from_specs(metrics)
-        # Set up private attributes to record the loss values and best weights.
-        self._losses = []  # type: List[float]
-        self._best = None  # type: Optional[Vector]
-        # Set up a private attribute to prevent redundant weights sharing.
-        self._clients_holding_latest_model = set()  # type: Set[str]
+
+        self.all_centroids = [] 
+        self.all_counts = []
+        self.privacy_threshold = 2 
         
 
 
@@ -176,23 +147,6 @@ class UnsupervisedFederatedServer:
             config.logger = logger
         return config.build_server()
 
-    @staticmethod
-    def _parse_optim(
-        optim: Union[FLOptimConfig, str, Dict[str, Any]],
-    ) -> FLOptimConfig:
-        """Parse 'optim' instantiation argument."""
-        if isinstance(optim, FLOptimConfig):
-            return optim
-        if isinstance(optim, str):
-            return FLOptimConfig.from_toml(optim)
-        if isinstance(optim, dict):
-            return FLOptimConfig.from_params(**optim)
-        raise TypeError(
-            "'optim' should be a declearn.main.config.FLOptimConfig "
-            "or a dict of parameters or the path to a TOML file from "
-            f"which to instantiate one, not '{type(optim)}'."
-        )
-
     def run(
         self,
         config: Union[FLRunConfig, str, Dict[str, Any]],
@@ -242,7 +196,7 @@ class UnsupervisedFederatedServer:
             # Iteratively run training and evaluation rounds.
             round_i = 0
             for round_i in range(config.rounds):
-                await self.training_round(round_i, config.training)
+                await self.training_round(round_i)
             # Interrupt training when time comes.
             self.logger.info("Stopping training.")
             await self.stop_training(round_i)
@@ -283,22 +237,25 @@ class UnsupervisedFederatedServer:
         # When needed, prompt clients for metadata and process them.
         await self._require_and_process_data_info()
         # Serialize intialization information and send it to clients.
-        message = messaging.InitRequest(
-            model=self.model,
-            optim=self.c_opt,
-            aggrg=self.aggrg,
-            metrics=self.metrics.get_config()["metrics"],
+        message = messaging.KMeansInitRequest(
+            k_global=self.model.n_clusters,
+            privacy_threshold=self.privacy_threshold
         )
         self.logger.info("Sending initialization requests to clients.")
         await self.netwk.broadcast_message(message)
         # Await a confirmation from clients that initialization went well.
         # If any client has failed to initialize, raise.
         self.logger.info("Waiting for clients' responses.")
-        await self._collect_results(
+        replies = await self._collect_results(
             clients=self.netwk.client_names,
-            msgtype=messaging.InitReply,
-            context="Initialization",
+            msgtype=messaging.KMeansInitReply,
+            context="Initialization"
         )
+        # Concatenate data after initialization phase
+        for client, reply in replies.items():
+            self.all_centroids.extend(reply.cluster_means)
+            self.all_counts.extend(reply.sample_counts)
+
         self.logger.info("Initialization was successful.")
 
     async def _require_and_process_data_info(
@@ -404,7 +361,6 @@ class UnsupervisedFederatedServer:
     async def training_round(
         self,
         round_i: int,
-        train_cfg: TrainingConfig,
     ) -> None:
         """Orchestrate a training round.
 
@@ -412,15 +368,12 @@ class UnsupervisedFederatedServer:
         ----------
         round_i: int
             Index of the training round.
-        train_cfg: TrainingConfig
-            TrainingConfig dataclass instance wrapping data-batching
-            and computational effort constraints hyper-parameters.
         """
         # Select participating clients. Run SecAgg setup when needed.
         self.logger.info("Initiating training round %s", round_i)
         clients = self._select_training_round_participants()
         # Send training instructions and await results.
-        await self._send_training_instructions(clients, round_i, train_cfg) #Envoye les centroides C_g
+        await self._send_training_instructions(clients, round_i) # envoie les C_g au clients
         self.logger.info("Awaiting clients' training results.")
         # Reiceive results from clients and check for errors.
         results = await self._collect_results(
@@ -440,7 +393,6 @@ class UnsupervisedFederatedServer:
         self,
         clients: Set[str],
         round_i: int,
-        train_cfg: TrainingConfig,
     ) -> None:
         """Send training instructions to selected clients.
 
@@ -450,40 +402,39 @@ class UnsupervisedFederatedServer:
             Names of the clients participating in the training round.
         round_i: int
             Index of the training round.
-        train_cfg: TrainingConfig
-            TrainingConfig dataclass instance wrapping data-batching
-            and computational effort constraints hyper-parameters.
         """
-        # Set up the base training request.
-        msg_light = messaging.TrainRequest( #peut etre rajouter un type de message
+        # Create message that contains centroids.
+        msg_light = messaging.KMeansTrainRequest( 
+            centroids=self.model.get_weights(), 
             round_i=round_i,
-            weights=self.model.get_weights(),
-            aux_var=self.optim.collect_aux_var(),
-            **train_cfg.message_params,
         )
-        # Dois envoyé les nouveaux centroids aux clients.
-          
         # Send it to clients, sparingly joining model weights.
         await self.netwk.broadcast_message(msg_light, clients)
 
     def _conduct_global_update(
         self,
-        results: Dict[str, messaging.TrainReply],
+        results: Dict[str, messaging.KMeansTrainReply],
     ) -> None:
         """Use training results from clients to update the global model.
 
         Parameters
         ----------
-        results: dict[str, TrainReply]
-            Client-wise TrainReply message sent after a training round.
+        results: dict[str, KMeansTrainReply]
+            Client-wise KMeansTrainReply message sent after a training round.
         """
+        self.all_centroids = []
+        self.all_counts = []
         # Aggregate the client-wise results.
-        # étape FKM - Agregation (ligne 8 et 9)
-
-        # Create new centroid to send to clients By using apply_updates
-        # Line 10 of the FKM paper, boucle ? 
-        self.model.apply_updates(XXX) 
-
+        for client, reply in results.items():
+            self.all_centroids.extend([centroid.coefs["centroid"] for centroid in reply.cluster_means])
+            self.all_counts.extend(reply.sample_counts)
+        try:
+            result = self.model.compute_kmeans(self.all_centroids, self.all_counts, False)
+        except Exception as exc:
+            self.logger.error("Compute Kmeans failed: %s", exc)
+            raise
+        self.model.set_weights(Vector.build({"centroid": result["centroids"]}))
+        
 
     async def stop_training(
         self,
@@ -497,9 +448,8 @@ class UnsupervisedFederatedServer:
             Number of training rounds taken until now.
         """
         self.logger.info("Recovering weights that yielded the lowest loss.")
-        message = messaging.StopTraining(
-            weights=self._best or self.model.get_weights(), # Ici recupere les derniers centroids
-            loss=min(self._losses, default=float("nan")), 
+        message = messaging.KMeansStopTraining(
+            centroids=self.model.get_weights(),
             rounds=rounds,
         )
         self.logger.info("Notifying clients that training is over.")

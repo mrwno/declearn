@@ -111,14 +111,15 @@ class FederatedKMeansModel(Model):
         elif self.init_method == "k-means++":
             # Not yet implemented
             raise NotImplementedError("K-means++ initialization is not yet implemented.")
-
-    def get_centroids(self, trainable: bool = False) -> np.ndarray:
+        
+    def get_weights(self, trainable: bool = False) -> Vector:
         """Return current centroids as model weights."""
-        return self.centroids.copy() if self.centroids is not None else None
+        return Vector.from_array(self.centroids.copy()) if self.centroids is not None else None
     
-    def set_centroids(self, centroids: np.ndarray, trainable: bool = False) -> None:
+    def set_weights(self, weights: Vector, trainable: bool = False) -> None:
         """Update model weights (centroids) with provided values."""
-        self.centroids = centroids.copy()
+        self.centroids = weights.coefs["centroids"].copy()
+        self.n_clusters = len(self.centroids) 
 
     def compute_kmeans(self, data: Any, weights: Any, client: bool, ) -> Dict[str, np.ndarray]:
         """Compute cluster statistics (sums and counts) for the **entire dataset** 
@@ -192,6 +193,7 @@ class FederatedKMeansModel(Model):
             final_counts = counts
 
         self.centroids = final_centroids
+        self.n_clusters = len(self.centroids)
         # Return C_i and N_i
         return {"centroids": final_centroids, "counts": final_counts}
 
@@ -214,30 +216,23 @@ class FederatedKMeansModel(Model):
         distances = np.linalg.norm(X[:, None] - self.centroids, axis=2)
         return np.argmin(distances, axis=1)
     
-    #################################
-
-    # Functions required from Model API - AI generated
-    # ToDo + change comments from functions
-    def get_weights(self, trainable: bool = False) -> Vector:
-        return Vector.from_array(self.centroids.copy()) if self.centroids is not None else None
-    
-    def set_weights(self, weights: Vector, trainable: bool = False) -> None:
-        self.centroids = weights.coefs.copy()
 
     def compute_batch_gradients(self, batch: Any, max_norm: Optional[float] = None) -> Dict[str, Vector]:
-        """Wrapper pour compute_kmeans (nécessaire pour l'API DecLearn)."""
-        result = self.compute_kmeans(batch[0], None, client=True)
+        """Wrapper for compute_kmeans."""
+        result = self.compute_kmeans(batch, None, client=True)
+        centroids = {"centroids": result["centroids"]}  
+        counts = {"count": result["counts"]}          
+    
         return {
-            "centroids": Vector.from_array(result["centroids"]),
-            "counts": Vector.from_array(result["counts"])
+            "centroids": Vector.build(centroids),
+            "counts": Vector.build(counts)
         }
 
     def apply_updates(self, updates: Dict[str, Vector]) -> None:
-        """Mise à jour des centroïdes (nécessaire pour l'API DecLearn)."""
+        """Same as set_weights. API compatibility."""
         centroids = updates["centroids"].coefs
         self.centroids = centroids.copy()
 
-    # 2. Ajouter des méthodes factices pour le reste de l'API
     def loss_function(self, y_true: Any, y_pred: Any) -> Any:
         raise NotImplementedError("Not used in K-means")
     
@@ -247,9 +242,6 @@ class FederatedKMeansModel(Model):
 
     def update_device_policy(self, device: str) -> None:
         pass
-    
-    #############################
-
 
     @property
     def converged(self) -> bool:
