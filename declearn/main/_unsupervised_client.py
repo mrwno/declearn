@@ -53,7 +53,6 @@ class UnsupervisedFederatedClient:
         self,
         netwk: Union[NetworkClient, NetworkClientConfig, Dict[str, Any], str],
         train_data: Union[Dataset, str],
-        valid_data: Optional[Union[Dataset, str]] = None,
         logger: Union[logging.Logger, str, None] = None,
         verbose: bool = True,
     ) -> None:
@@ -68,10 +67,6 @@ class UnsupervisedFederatedClient:
             to that of this `FederatedClient`.
         train_data: Dataset or str
             Dataset instance wrapping the training data.
-            (DEPRECATED) May be a path to a JSON dump file.
-        valid_data: Dataset or str or None
-            Optional Dataset instance wrapping validation data.
-            If None, run evaluation rounds over `train_data`.
             (DEPRECATED) May be a path to a JSON dump file.
         logger: logging.Logger or str or None, default=None,
             Logger to use, or name of a logger to set up with
@@ -99,15 +94,10 @@ class UnsupervisedFederatedClient:
         if not isinstance(train_data, Dataset):
             raise TypeError("'train_data' should be a Dataset.")
         self.train_data = train_data
-        # Assign the wrapped validation dataset (if any).
-        if not (valid_data is None or isinstance(valid_data, Dataset)):
-            raise TypeError("'valid_data' should be a Dataset.")
-        self.valid_data = valid_data
-        
         self.verbose = bool(verbose)
         # Create slots that are (opt.) populated during initialization.
+        # Using trainmanager later, now we just use the model directly
         self.trainmanager = None  # type: Optional[UnsupervisedTrainingManager]
-        self.fairness = None  # type: Optional[FairnessControllerClient]
 
     @staticmethod
     def _parse_netwk(netwk) -> Tuple[NetworkClient, bool]:
@@ -188,12 +178,9 @@ class UnsupervisedFederatedClient:
             Whether to interrupt the client's message-receiving loop.
         """
         exit_loop = False
-        if issubclass(message.message_cls, messaging.TrainRequest):
+        if issubclass(message.message_cls, messaging.KMeansTrainRequest):
             await self.training_round(message.deserialize())
-        # Round d'évaluation en suspend
-        #elif issubclass(message.message_cls, messaging.EvaluationRequest):
-        #    await self.evaluation_round(message.deserialize())
-        elif issubclass(message.message_cls, messaging.StopTraining):
+        elif issubclass(message.message_cls, messaging.KMeansdStopTraining):
             await self.stop_training(message.deserialize())
             exit_loop = True
         elif issubclass(message.message_cls, messaging.CancelTraining):
@@ -258,24 +245,12 @@ class UnsupervisedFederatedClient:
             received = await self.netwk.recv_message()
         # Ensure that an 'InitRequest' was received.
         message = await verify_server_message_validity(
-            self.netwk, received, expected=messaging.InitRequest
+            self.netwk, received, expected=messaging.KMeansInitRequest
         )
+
+        #choose k data point as centroids and do 1 iteration of kmeans (instead of kmeans++)
+        # Create KMeansInitReply message to send back to the server.
         
-        # Perform initialization, catching errors to report them to the server.
-        try:
-            self.trainmanager = UnsupervisedTrainingManager(
-                model=message.model,
-                optim=message.optim,
-                aggrg=message.aggrg,
-                train_data=self.train_data,
-                valid_data=self.valid_data,
-                metrics=message.metrics,
-                logger=self.logger,
-                verbose=self.verbose,
-            )
-        except Exception as exc:
-            await self.netwk.send_message(messaging.Error(repr(exc)))
-            raise RuntimeError("Initialization failed.") from exc
         # Send back an empty message to indicate that things went fine.
         self.logger.info("Notifying the server that initialization went fine.")
 
@@ -304,7 +279,7 @@ class UnsupervisedFederatedClient:
 
     async def training_round(
         self,
-        message: messaging.TrainRequest,
+        message: messaging.KMeansTrainRequest,
     ) -> None:
         """Run a local training round.
 
@@ -314,39 +289,35 @@ class UnsupervisedFederatedClient:
 
         Parameters
         ----------
-        message: TrainRequest
+        message: KMeansTrainRequest
             Instructions from the server regarding the training round.
         """
-        assert self.trainmanager is not None
-        
-        # Run the training round.
-        reply = self.trainmanager.training_round(message)  # type: Message
-        # Send training results (or error message) to the server.
+        # Update centroids with those from the server.
+
+        # Run a local training round.
+
+        # Create a KMeansTrainReply message to send back to the server.
         await self.netwk.send_message(reply)
 
 
     async def stop_training(
         self,
-        message: messaging.StopTraining,
+        message: messaging.KMeansdStopTraining,
     ) -> None:
         """Handle a server request to stop training.
 
         Parameters
         ----------
-        message: StopTraining
-            StopTraining message received from the server.
+        message: KMeansdStopTraining
+            KMeansdStopTraining message received from the server.
         """
         self.logger.info(
-            "Training is now over, after %s rounds. Global loss: %s",
+            "Training is now over, after %s rounds.",
             message.rounds,
-            message.loss,
         )
-        if self.ckptr:
-            path = os.path.join(self.ckptr.folder, "model_state_best.json")
-            self.logger.info("Checkpointing final weights under %s.", path)
-            assert self.trainmanager is not None  # for mypy
-            self.trainmanager.model.set_weights(message.weights)
-            self.ckptr.save_model(self.trainmanager.model, timestamp="best")
+
+        # Update the model with the final centroids.
+        
 
     async def cancel_training(
         self,

@@ -57,11 +57,7 @@ class UnsupervisedTrainingManager:
     def __init__(
         self,
         model: Model,
-        optim: Optimizer,
-        aggrg: Aggregator,
         train_data: Dataset,
-        valid_data: Optional[Dataset] = None,
-        metrics: Union[MetricSet, List[MetricInputType], None] = None,
         logger: Union[logging.Logger, str, None] = None,
         verbose: bool = True,
     ) -> None:
@@ -71,21 +67,8 @@ class UnsupervisedTrainingManager:
         ----------
         model: Model
             Model instance that needs training and/or evaluating.
-        optim: Optimizer
-            Optimizer instance that orchestrates training steps.
-        aggrg: Aggregator
-            Aggregator instance that is used to derive global model
-            updates from peer-wise local ones.
         train_data: Dataset
             Dataset instance wrapping the local training dataset.
-        valid_data: Dataset or None, default=None
-            Dataset instance wrapping the local validation dataset.
-            If None, use `train_data` in the evaluation rounds.
-        metrics: MetricSet or list[MetricInputType] or None, default=None
-            MetricSet instance or list of Metric instances and/or specs
-            to wrap into one, defining evaluation metrics to compute in
-            addition to the model's loss.
-            If None, only compute and report the model's loss.
         logger: logging.Logger or str or None, default=None,
             Logger to use, or name of a logger to set up with
             `declearn.utils.get_logger`.
@@ -96,52 +79,11 @@ class UnsupervisedTrainingManager:
         """
         # arguments serve modularity; pylint: disable=too-many-arguments
         self.model = model
-        self.optim = optim
-        self.aggrg = aggrg
         self.train_data = train_data
-        self.valid_data = valid_data
-        self.metrics = self._prepare_metrics(metrics)
         if not isinstance(logger, logging.Logger):
             logger = get_logger(logger or f"{type(self).__name__}")
         self.logger = logger
         self.verbose = verbose
-
-    def _prepare_metrics(
-        self,
-        metrics: Union[MetricSet, List[MetricInputType], None],
-    ) -> MetricSet:
-        """Parse the `metrics` instantiation inputs into a MetricSet."""
-        # Type-check and/or transform the inputs into a MetricSet instance.
-        metrics = MetricSet.from_specs(metrics)
-        # If a model loss metric is part of the set, remove it.
-        for i, metric in enumerate(metrics.metrics):
-            if metric.name == "loss":
-                metrics.metrics.pop(i)
-        # Add the wrapped model's loss to the metrics.
-        loss = self._setup_loss_metric()
-        metrics.metrics.append(loss)
-        # Return the prepared object for assignment as `metrics` attribute.
-        return metrics
-
-    def _setup_loss_metric(
-        self,
-    ) -> Metric:
-        """Return an ad-hoc Metric object to compute the model's loss."""
-        loss_fn = self.model.loss_function
-
-        # Write a custom, unregistered Metric subclass.
-        class LossMetric(MeanMetric, register=False):
-            """Ad hoc Metric wrapping a model's loss function."""
-
-            name = "loss"
-
-            def metric_func(
-                self, y_true: np.ndarray, y_pred: np.ndarray
-            ) -> np.ndarray:
-                return loss_fn(y_true, y_pred)
-
-        # Instantiate and return the ad-hoc loss metric.
-        return LossMetric()
 
     def training_round(
         self,
