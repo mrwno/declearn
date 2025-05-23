@@ -377,7 +377,7 @@ class UnsupervisedFederatedServer:
         self.logger.info("Awaiting clients' training results.")
         # Reiceive results from clients and check for errors.
         results = await self._collect_results(
-            clients, messaging.TrainReply, "training" #recoit les nouveaux centroids ( S_i et C_i)
+            clients, messaging.KmeansTrainReply, "training" #recoit les nouveaux centroids ( S_i et C_i)
         )
         # Aggregate client-wise results and update the global model.
         self.logger.info("Conducting server-side optimization.")

@@ -81,3 +81,11 @@ from ._fairness import (
     FairnessReply,
     FairnessSetupQuery,
 )
+
+from ._kmeans import (
+    KMeansInitRequest,
+    KMeansInitReply,
+    KMeansStopTraining,
+    KMeansTrainRequest,
+    KMeansTrainReply,
+)

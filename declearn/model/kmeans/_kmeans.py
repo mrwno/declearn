@@ -25,6 +25,8 @@ from declearn.model.api import Vector
 from declearn.data_info import aggregate_data_info
 from declearn.utils import register_type
 
+from sklearn.cluster import KMeans
+
 __all__ = ["FederatedKMeansModel"]
 
 @register_type(name="FederatedKMeansModel", group="Model")
@@ -47,8 +49,7 @@ class FederatedKMeansModel(Model):
     def __init__(
         self,
         n_clusters: int,
-        init_method: str = "random",
-        tol: float = 1e-4,
+        privacy_threshold: int = 2,
         random_state: Optional[int] = None,
     ):
         """Instantiate a federated K-means clustering model.
@@ -74,20 +75,17 @@ class FederatedKMeansModel(Model):
         """
         super().__init__(model=None)
         self.n_clusters = n_clusters
-        self.init_method = init_method
-        self.tol = tol
+        self.privacy_threshold = privacy_threshold
         self.random_state = random_state
-        self.centroids = None  # type: Optional[np.ndarray]
-        self.delta = np.inf    # Track maximum centroid change between iterations
-
-        # Validate the initialization method
-        if init_method not in ["random", "k-means++"]:
-            raise ValueError(f"Unsupported initialization method: {init_method}")
-
-        # Set the seed if provided
         if random_state is not None:
             np.random.seed(random_state)
 
+        self.centroids = None
+        self._previous_centroids = None
+        self.init_method = 'k-means++'
+        self.max_iter = 300 # Default value from sklearn
+        self._kmeans = self._init_kmeans()
+        
 
     @property
     def required_data_info(self) -> Set[str]:
@@ -95,33 +93,31 @@ class FederatedKMeansModel(Model):
         return {"features_shape"}
 
     def initialize(self, data_info: Dict[str, Any]) -> None:
-        """Initialize centroids based on aggregated data features metadata.
-        
-        Parameters
-        ----------
-        data_info : dict
-            Aggregated data features metadata containing "features_shape"
+        """Not used
         """
-        data_info = aggregate_data_info([data_info], self.required_data_info)
-        n_features = data_info["features_shape"][0]
-        
-        if self.init_method == "random":
-            # Initialize random centroids within [0, 1) range
-            self.centroids = np.random.rand(self.n_clusters, n_features)
-        elif self.init_method == "k-means++":
-            # Not yet implemented
-            raise NotImplementedError("K-means++ initialization is not yet implemented.")
-        
+        pass
+                
     def get_weights(self, trainable: bool = False) -> Vector:
         """Return current centroids as model weights."""
-        return Vector.from_array(self.centroids.copy()) if self.centroids is not None else None
+        return Vector.build({"centroids":self.centroids.copy()})
     
     def set_weights(self, weights: Vector, trainable: bool = False) -> None:
         """Update model weights (centroids) with provided values."""
         self.centroids = weights.coefs["centroids"].copy()
+        self._kmeans.cluster_centers_ = self.centroids
         self.n_clusters = len(self.centroids) 
 
-    def compute_kmeans(self, data: Any, weights: Any, client: bool, ) -> Dict[str, np.ndarray]:
+    def _init_kmeans(self) -> KMeans:
+        """Create a KMeans instance with the specified parameters."""
+        return KMeans(
+            n_clusters=self.n_clusters,
+            init=self.init_method,
+            max_iter=self.max_iter,
+            random_state=self.random_state,
+            n_init = 1,
+        )
+
+    def compute_kmeans(self, data: Any, weights: Any, client: bool) -> Dict[str, np.ndarray]:
         """Compute cluster statistics (sums and counts) for the **entire dataset** 
         ,as required by Swier Garst's paper.
         Parameters
@@ -135,67 +131,45 @@ class FederatedKMeansModel(Model):
         dict
             Contains "centroids" (updated cluster centers) and "counts" (cluster sizes).
         """
-        if data is None:
-            raise ValueError("Data cannot be None.")
-        
-        X = data
-
+        print("Initial centroids:", self.centroids)
+        self._previous_centroids = self.centroids.copy() if self.centroids is not None else None
         if client:
-            # Client-side: centroids are updated outside of this function (line 13)
-            current_centroids = self.centroids.copy() if self.centroids is not None else None
-            # Client must have initialized centroids
-            if current_centroids is None:
-                raise ValueError("Centroids must be initialized before applying updates.")
-            # Put weights to 1 for client-side
-            weights = np.ones(X.shape[0])
+            if self.centroids is not None: 
+                self._kmeans.fit(data)   
+                assign_cluser = self.compute_batch_predictions(data)
+                unique_labels = np.unique(assign_cluser)
+                self.centroids = self.centroids[unique_labels]
+                self.n_clusters = len(self.centroids)
+                self.init_method = self.centroids
+            else:
+                self.init_method = 'k-means++'
+            self.init_method = self.centroids if self.centroids is not None else 'k-means++'
+            self.max_iter = 1 
+            self._kmeans = self._init_kmeans()
+            self._kmeans.fit(data)
+
+            self.centroids = self._kmeans.cluster_centers_
+            labels = self._kmeans.labels_
+            counts = np.bincount(labels, minlength=self.n_clusters)
+            mask = counts >= self.privacy_threshold
+            print("Updated centroids:", self.centroids)
+            return {
+                "centroids": self.centroids[mask],
+                "counts": counts[mask]
+            }
+
         else:
-        # Server-side: need to initialize centroids
-            # Choose self.n_clusters random data points as centroids
-            indices = np.random.choice(X.shape[0], self.n_clusters, replace=False)
-            self.centroids = X[indices]
-            current_centroids = self.centroids.copy()
-            # Check that data and weights have the same number of elements
-            if len(data) != len(weights):
-                raise ValueError("Parameters 'data' and 'weights' must have the same number of elements.")
-            
-        delta = np.inf
-        # if a centroid is not used
-        counts = np.zeros(self.n_clusters)
+            self.max_iter = 300
+            self._kmeans = KMeans(n_clusters=self.n_clusters)
+            self._kmeans.fit(data, sample_weight=weights)
+            self.centroids = self._kmeans.cluster_centers_
+            counts = np.ones(self.n_clusters)
 
-        while delta >= self.tol:
-            # Calculate distances
-            distances = np.linalg.norm(data[:, None] - current_centroids, axis=2)
-            # Assign each datapoint to the nearest centroid
-            labels = np.argmin(distances, axis=1)
-            # Update centroids
-            new_centroids = np.zeros_like(current_centroids)
-            for k in range(self.n_clusters):
-                mask = (labels == k)
-                counts[k] = np.sum(mask)
-                if counts[k] == 0:
-                    new_centroids[k] = current_centroids[k]
-                    continue
-                weights_masked = weights[mask]    
-                new_centroids[k] = np.average(X[mask], axis=0, weights=weights_masked)
-
-            delta = np.max(np.linalg.norm(new_centroids - current_centroids, axis=1))
-            current_centroids = new_centroids
-            if client:
-                break
-
-        # Filter out empty clusters for client-side
-        if client:
-            non_empty = counts > 0
-            final_centroids = current_centroids[non_empty]
-            final_counts = counts[non_empty]
-        else:
-            final_centroids = current_centroids
-            final_counts = counts
-
-        self.centroids = final_centroids
-        self.n_clusters = len(self.centroids)
-        # Return C_i and N_i
-        return {"centroids": final_centroids, "counts": final_counts}
+            print("Updated centroids:", self.centroids)
+            return {
+                "centroids": self.centroids,
+                "counts": counts
+            }
 
  
 
@@ -212,9 +186,8 @@ class FederatedKMeansModel(Model):
         np.ndarray
             Cluster indices for each sample in the batch
         """
-        X = batch[0]
-        distances = np.linalg.norm(X[:, None] - self.centroids, axis=2)
-        return np.argmin(distances, axis=1)
+        
+        return self._kmeans.predict(batch)
     
 
     def compute_batch_gradients(self, batch: Any, max_norm: Optional[float] = None) -> Dict[str, Vector]:
@@ -246,17 +219,21 @@ class FederatedKMeansModel(Model):
     @property
     def converged(self) -> bool:
         """Check if convergence criteria are met (delta < tolerance)."""
-        return self.delta < self.tol
+        try:
+            delta = np.max(np.linalg.norm(self.centroids - self._previous_centroids, axis=1))
+            return delta < 1e-4  # Tolérance par défaut
+        except AttributeError:
+            return False
 
     def get_config(self) -> Dict[str, Any]:
         """Return model configuration as a dictionary."""
         return {
             "n_clusters": self.n_clusters,
-            "init_method": self.init_method,
-            "tol": self.tol,
+            "privacy_threshold": self.privacy_threshold,
             "random_state": self.random_state,
             "centroids": self.centroids.tolist() if self.centroids is not None else None,
-            "delta": float(self.delta),
+            "init_method": self.init_method,
+            "max_iter": self.max_iter
         }
 
     @classmethod
@@ -264,11 +241,19 @@ class FederatedKMeansModel(Model):
         """Instantiate model from configuration dictionary."""
         model = cls(
             n_clusters=config["n_clusters"],
-            init_method=config["init_method"],
-            tol=config["tol"],
-            random_state=config["random_state"],
+            privacy_threshold=config["privacy_threshold"],
+            random_state=config["random_state"]
         )
+        
+        # Restaurer les paramètres supplémentaires
+        model.init_method = config["init_method"]
+        model.max_iter = config["max_iter"]
+        
+        # Re-créer le modèle KMeans avec ces paramètres
+        model._init_kmeans()
+        
         if config["centroids"] is not None:
             model.centroids = np.array(config["centroids"])
-        model.delta = config["delta"]
+            model._kmeans.cluster_centers_ = model.centroids
+            
         return model

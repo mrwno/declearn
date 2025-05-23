@@ -18,23 +18,18 @@
 """Messages for the default Federated Unsupervised Learning process of DecLearn."""
 
 import dataclasses
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List
 
 from typing_extensions import Self  # future: import from typing (py >=3.11)
 
-from declearn.aggregator import Aggregator, ModelUpdates
 from declearn.messaging._api import Message
-from declearn.metrics import MetricInputType, MetricState
 from declearn.model.api import Model, Vector
-from declearn.optimizer import Optimizer
-from declearn.optimizer.modules import AuxVar
-from declearn.utils import deserialize_object, serialize_object
 
 
 __all__ = [
     "KMeansInitRequest",
     "KMeansInitReply",
-    "KMeansdStopTraining",
+    "KMeansStopTraining",
     "KMeansTrainRequest",
     "KMeansTrainReply",
 ]
@@ -43,6 +38,7 @@ __all__ = [
 class KMeansInitRequest(Message):
     """Server-emitted request to initialize local kmeans model."""
     typekey = "kmeans_init_request"
+    model: Model
     k_global: int
     privacy_threshold: int = 2
 
@@ -55,9 +51,9 @@ class KMeansInitReply(Message):
 
 
 @dataclasses.dataclass
-class KMeansdStopTraining(Message):
+class KMeansStopTraining(Message):
     """Server-emitted notification that the training process is over."""
-    typekey = "stop_training"
+    typekey = "kmeans_stop_training"
     centroids: Vector
     rounds: int
 
@@ -65,14 +61,14 @@ class KMeansdStopTraining(Message):
 @dataclasses.dataclass
 class KMeansTrainRequest(Message):
     """Server-emitted request to participate in a training round."""
-    typekey = "kmeans_iter_request"
+    typekey = "kmeans_train_request"
     centroids: List[Vector]
     round_i: int
 
 @dataclasses.dataclass
 class KMeansTrainReply(Message):
     """Client-emitted results from a local training round."""
-    typekey = "kmeans_iter_reply"
+    typekey = "kmeans_train_reply"
     cluster_means: List[Vector]
     sample_counts: List[int]
 

@@ -33,7 +33,6 @@ from declearn.communication.utils import (
     verify_server_message_validity,
 )
 from declearn.dataset import Dataset
-from declearn.fairness.api import FairnessControllerClient
 from declearn.messaging import Message, SerializedMessage
 from declearn.training import UnsupervisedTrainingManager
 from declearn.utils import LOGGING_LEVEL_MAJOR, get_logger
@@ -95,6 +94,7 @@ class UnsupervisedFederatedClient:
             raise TypeError("'train_data' should be a Dataset.")
         self.train_data = train_data
         self.verbose = bool(verbose)
+        self.model = None
         # Create slots that are (opt.) populated during initialization.
         # Using trainmanager later, now we just use the model directly
         self.trainmanager = None  # type: Optional[UnsupervisedTrainingManager]
@@ -247,6 +247,9 @@ class UnsupervisedFederatedClient:
         message = await verify_server_message_validity(
             self.netwk, received, expected=messaging.KMeansInitRequest
         )
+
+        self.model = message.model
+
 
         #choose k data point as centroids and do 1 iteration of kmeans (instead of kmeans++)
         # Create KMeansInitReply message to send back to the server.
