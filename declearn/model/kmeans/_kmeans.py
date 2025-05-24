@@ -80,7 +80,7 @@ class FederatedKMeansModel(Model):
         if random_state is not None:
             np.random.seed(random_state)
 
-        self.centroids = None
+        self.centroids = np.empty((0,))
         self._previous_centroids = None
         self.init_method = 'k-means++'
         self.max_iter = 300 # Default value from sklearn
@@ -93,19 +93,34 @@ class FederatedKMeansModel(Model):
         return {"features_shape"}
 
     def initialize(self, data_info: Dict[str, Any]) -> None:
-        """Not used
-        """
-        pass
+        """Initialize model with aggregated data information."""
+        self.features_shape = data_info["features_shape"]
                 
     def get_weights(self, trainable: bool = False) -> Vector:
         """Return current centroids as model weights."""
         return Vector.build({"centroids":self.centroids.copy()})
     
+    def get_model_centroids(self) -> np.ndarray:
+        return self._kmeans.cluster_centers_
+    
     def set_weights(self, weights: Vector, trainable: bool = False) -> None:
         """Update model weights (centroids) with provided values."""
-        self.centroids = weights.coefs["centroids"].copy()
-        self._kmeans.cluster_centers_ = self.centroids
-        self.n_clusters = len(self.centroids) 
+        centroids = weights.coefs["centroids"].copy()
+
+        if not hasattr(self, "features_shape"):
+            raise ValueError("Model must be initialized before use.")
+        
+        # Vérifier la cohérence des dimensions
+        for centroid in centroids:
+            if centroid.shape != self.features_shape:
+                raise ValueError(
+                    f"Centroid shape does not match  ({centroid.shape})"
+                    f"initialized features shape {self.features_shape}"
+                )
+        self.centroids = centroids
+        self.n_clusters = len(self.centroids)   
+        self.init_method = centroids
+        self._kmeans = self._init_kmeans()
 
     def _init_kmeans(self) -> KMeans:
         """Create a KMeans instance with the specified parameters."""
@@ -134,16 +149,15 @@ class FederatedKMeansModel(Model):
         print("Initial centroids:", self.centroids)
         self._previous_centroids = self.centroids.copy() if self.centroids is not None else None
         if client:
-            if self.centroids is not None: 
-                self._kmeans.fit(data)   
-                assign_cluser = self.compute_batch_predictions(data)
+            if self.centroids.size > 0: 
+                distances = np.linalg.norm(data[:, np.newaxis] - self.centroids, axis=2)
+                assign_cluser = np.argmin(distances, axis=1)
                 unique_labels = np.unique(assign_cluser)
                 self.centroids = self.centroids[unique_labels]
                 self.n_clusters = len(self.centroids)
                 self.init_method = self.centroids
             else:
                 self.init_method = 'k-means++'
-            self.init_method = self.centroids if self.centroids is not None else 'k-means++'
             self.max_iter = 1 
             self._kmeans = self._init_kmeans()
             self._kmeans.fit(data)
@@ -190,21 +204,25 @@ class FederatedKMeansModel(Model):
         return self._kmeans.predict(batch)
     
 
-    def compute_batch_gradients(self, batch: Any, max_norm: Optional[float] = None) -> Dict[str, Vector]:
+    def compute_batch_gradients(self, batch: Any, max_norm: Optional[float] = None) -> Vector:
         """Wrapper for compute_kmeans."""
-        result = self.compute_kmeans(batch, None, client=True)
-        centroids = {"centroids": result["centroids"]}  
-        counts = {"count": result["counts"]}          
+        features = batch[0]
+        result = self.compute_kmeans(features, None, client=True)        
     
-        return {
-            "centroids": Vector.build(centroids),
-            "counts": Vector.build(counts)
-        }
-
-    def apply_updates(self, updates: Dict[str, Vector]) -> None:
-        """Same as set_weights. API compatibility."""
-        centroids = updates["centroids"].coefs
-        self.centroids = centroids.copy()
+        return Vector.build({
+            "centroids": result["centroids"]
+        })
+    
+    def apply_updates(self, updates: Vector) -> None:
+        """Mettre à jour les poids de manière atomique"""
+        new_centroids = updates.coefs["centroids"].copy()
+        self.centroids = new_centroids
+        self._kmeans = KMeans(
+            n_clusters=len(new_centroids),
+            init=new_centroids,
+            n_init=1
+        )
+        self._kmeans.fit(np.zeros((0,) + self.features_shape)) 
 
     def loss_function(self, y_true: Any, y_pred: Any) -> Any:
         raise NotImplementedError("Not used in K-means")
