@@ -32,9 +32,11 @@ from declearn.communication.utils import (
     NetworkClientConfig,
     verify_server_message_validity,
 )
+from declearn.model.api import Vector
 from declearn.dataset import Dataset
 from declearn.messaging import Message, SerializedMessage
-from declearn.training import UnsupervisedTrainingManager
+#from declearn.training import UnsupervisedTrainingManager
+from declearn.model.kmeans import FederatedKMeansModel
 from declearn.utils import LOGGING_LEVEL_MAJOR, get_logger
 
 
@@ -94,7 +96,7 @@ class UnsupervisedFederatedClient:
             raise TypeError("'train_data' should be a Dataset.")
         self.train_data = train_data
         self.verbose = bool(verbose)
-        self.model = None
+        self.model = None # type: FederatedKMeansModel
         # Create slots that are (opt.) populated during initialization.
         # Using trainmanager later, now we just use the model directly
         self.trainmanager = None  # type: Optional[UnsupervisedTrainingManager]
@@ -180,7 +182,7 @@ class UnsupervisedFederatedClient:
         exit_loop = False
         if issubclass(message.message_cls, messaging.KMeansTrainRequest):
             await self.training_round(message.deserialize())
-        elif issubclass(message.message_cls, messaging.KMeansdStopTraining):
+        elif issubclass(message.message_cls, messaging.KMeansStopTraining):
             await self.stop_training(message.deserialize())
             exit_loop = True
         elif issubclass(message.message_cls, messaging.CancelTraining):
@@ -231,7 +233,7 @@ class UnsupervisedFederatedClient:
 
         Returns
         -------
-        model: Model
+        model: Model.
             Model that is to be trained (with shared initial parameters).
         optim: Optimizer
             Optimizer that is to be used locally to train the model.
@@ -249,17 +251,17 @@ class UnsupervisedFederatedClient:
         )
 
         self.model = message.model
+        self.model.initialize(received)
+        result = self.model.compute_kmeans(train_data=self.train_data, weights=None, client=True)
+        self.model.apply_result(result)
 
-
-        #choose k data point as centroids and do 1 iteration of kmeans (instead of kmeans++)
-        # Create KMeansInitReply message to send back to the server.
-        
+        reply = messaging.KMeansInitReply(
+            cluster_means=Vector.build({"centroids":result["centroids"]}),
+            sample_counts=result["counts"].tolist(),
+        )
         # Send back an empty message to indicate that things went fine.
         self.logger.info("Notifying the server that initialization went fine.")
-
-        # ICI on choisit des centroïdes initiaux aléatoires et on les envoie au serveur
-        
-        await self.netwk.send_message(messaging.InitReply())
+        await self.netwk.send_message(reply)
 
     async def _collect_and_send_metadata(
         self,
@@ -295,17 +297,23 @@ class UnsupervisedFederatedClient:
         message: KMeansTrainRequest
             Instructions from the server regarding the training round.
         """
-        # Update centroids with those from the server.
+        self.model.apply_update(message.centroids)
+        result = self.model.compute_kmeans(
+            train_data=self.train_data,
+            weights=None,
+            client=True,
+        )
 
-        # Run a local training round.
-
-        # Create a KMeansTrainReply message to send back to the server.
+        reply = messaging.KMeansTrainReply(
+            cluster_means=Vector.build({"centroids":result["centroids"]}),
+            sample_counts=result["counts"].tolist(),
+        )
         await self.netwk.send_message(reply)
 
 
     async def stop_training(
         self,
-        message: messaging.KMeansdStopTraining,
+        message: messaging.KMeansStopTraining,
     ) -> None:
         """Handle a server request to stop training.
 
@@ -318,8 +326,7 @@ class UnsupervisedFederatedClient:
             "Training is now over, after %s rounds.",
             message.rounds,
         )
-
-        # Update the model with the final centroids.
+        self.model.apply_update(message.centroids)
         
 
     async def cancel_training(

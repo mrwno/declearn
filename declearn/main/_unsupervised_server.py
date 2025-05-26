@@ -43,6 +43,7 @@ from declearn.main.utils import (
 from declearn.metrics import MetricInputType, MetricSet
 from declearn.model.api import Model, Vector
 from declearn.utils import deserialize_object, get_logger
+from declearn.model.kmeans import FederatedKMeansModel
 
 
 __all__ = [
@@ -60,7 +61,7 @@ class UnsupervisedFederatedServer:
 
     def __init__(
         self,
-        model: Union[Model, str, Dict[str, Any]],
+        model: Model,
         netwk: Union[NetworkServer, NetworkServerConfig, Dict[str, Any], str],
         logger: Union[logging.Logger, str, None] = None,
     ) -> None:
@@ -86,7 +87,7 @@ class UnsupervisedFederatedServer:
             logger = get_logger(logger or type(self).__name__)
         self.logger = logger
         # Assign the wrapped Model.
-        self.model = self._parse_model(model)
+        self.model = self._parse_model(model) # type: FederatedKMeansModel
         # Assign the wrapped NetworkServer.
         self.netwk = self._parse_netwk(netwk, logger=self.logger)
 
@@ -98,24 +99,11 @@ class UnsupervisedFederatedServer:
 
     @staticmethod
     def _parse_model(
-        model: Union[Model, str, Dict[str, Any]],
+        model: Model,
     ) -> Model:
         """Parse 'model' instantiation argument."""
         if isinstance(model, Model):
             return model
-        if isinstance(model, (str, dict)):
-            try:
-                output = deserialize_object(model)  # type: ignore[arg-type]
-            except Exception as exc:
-                raise TypeError(
-                    "'model' input deserialization failed."
-                ) from exc
-            if isinstance(output, Model):
-                return output
-            raise TypeError(
-                f"'model' input was deserialized into '{type(output)}', "
-                "whereas a declearn 'Model' instance was expected."
-            )
         raise TypeError(
             "'model' should be a declearn Model, optionally in serialized "
             f"form, not '{type(model)}'"
@@ -251,11 +239,17 @@ class UnsupervisedFederatedServer:
             msgtype=messaging.KMeansInitReply,
             context="Initialization"
         )
-        # Concatenate data after initialization phase
-        for client, reply in replies.items():
-            self.all_centroids.extend(reply.cluster_means)
-            self.all_counts.extend(reply.sample_counts)
-
+        # Concatenate centroids and counts from all clients.
+        all_centroids = []
+        all_counts = []
+        for reply in replies.values():
+            centroids = reply.cluster_means.coefs["centroids"]
+            all_centroids.extend(centroids)
+            all_counts.extend(reply.sample_counts)
+        all_centroids_vector = Vector.build({"centroids" :np.array(all_centroids)})
+        self.all_centroids = all_centroids_vector
+        self.all_counts = all_counts
+        
         self.logger.info("Initialization was successful.")
 
     async def _require_and_process_data_info(
@@ -377,7 +371,7 @@ class UnsupervisedFederatedServer:
         self.logger.info("Awaiting clients' training results.")
         # Reiceive results from clients and check for errors.
         results = await self._collect_results(
-            clients, messaging.KmeansTrainReply, "training" #recoit les nouveaux centroids ( S_i et C_i)
+            clients, messaging.KMeansTrainReply, "training" #recoit les nouveaux centroids ( S_i et C_i)
         )
         # Aggregate client-wise results and update the global model.
         self.logger.info("Conducting server-side optimization.")
