@@ -147,41 +147,40 @@ class FederatedKMeansModel(Model):
             Contains "centroids" (updated cluster centers) and "counts" (cluster sizes).
         """
         print("Initial centroids:", self.centroids)
-        self._previous_centroids = self.centroids.copy() if self.centroids is not None else None
         if client:
             if self.centroids.size > 0: 
                 distances = np.linalg.norm(data[:, np.newaxis] - self.centroids, axis=2)
                 assign_cluser = np.argmin(distances, axis=1)
                 unique_labels = np.unique(assign_cluser)
-                self.centroids = self.centroids[unique_labels]
-                self.n_clusters = len(self.centroids)
-                self.init_method = self.centroids
+                centroids = self.centroids[unique_labels]
+                self.n_clusters = len(centroids)
+                self.init_method = centroids
             else:
                 self.init_method = 'k-means++'
             self.max_iter = 1 
             self._kmeans = self._init_kmeans()
             self._kmeans.fit(data)
 
-            self.centroids = self._kmeans.cluster_centers_
+            centroids = self._kmeans.cluster_centers_
             labels = self._kmeans.labels_
             counts = np.bincount(labels, minlength=self.n_clusters)
             mask = counts >= self.privacy_threshold
-            print("Updated centroids:", self.centroids)
+            print("Updated centroids:", centroids[mask])
             return {
-                "centroids": self.centroids[mask],
+                "centroids": centroids[mask],
                 "counts": counts[mask]
             }
 
         else:
             self.max_iter = 300
-            self._kmeans = KMeans(n_clusters=self.n_clusters)
+            self._kmeans = KMeans(n_clusters=self.n_clusters, init='k-means++', random_state=self.random_state)
             self._kmeans.fit(data, sample_weight=weights)
-            self.centroids = self._kmeans.cluster_centers_
+            centroids = self._kmeans.cluster_centers_
             counts = np.ones(self.n_clusters)
 
-            print("Updated centroids:", self.centroids)
+            print("Updated centroids:", centroids)
             return {
-                "centroids": self.centroids,
+                "centroids": centroids,
                 "counts": counts
             }
 
@@ -214,15 +213,12 @@ class FederatedKMeansModel(Model):
         })
     
     def apply_updates(self, updates: Vector) -> None:
-        """Mettre à jour les poids de manière atomique"""
+        self._previous_centroids = self.centroids.copy()
         new_centroids = updates.coefs["centroids"].copy()
+        self.n_clusters = len(new_centroids)
         self.centroids = new_centroids
-        self._kmeans = KMeans(
-            n_clusters=len(new_centroids),
-            init=new_centroids,
-            n_init=1
-        )
-        self._kmeans.fit(np.zeros((0,) + self.features_shape)) 
+        self.init_method = new_centroids
+        self._kmeans = self._init_kmeans()
 
     def loss_function(self, y_true: Any, y_pred: Any) -> Any:
         raise NotImplementedError("Not used in K-means")
@@ -249,7 +245,7 @@ class FederatedKMeansModel(Model):
             "n_clusters": self.n_clusters,
             "privacy_threshold": self.privacy_threshold,
             "random_state": self.random_state,
-            "centroids": self.centroids.tolist() if self.centroids is not None else None,
+            "centroids": self.centroids.tolist(),
             "init_method": self.init_method,
             "max_iter": self.max_iter
         }

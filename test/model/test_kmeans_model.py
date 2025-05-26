@@ -44,6 +44,10 @@ class TestFKMeansModel(ModelTestSuite):
         assert np.allclose(np.sort(client_result["centroids"], axis=0), np.array([[0.5], [6.6]]), rtol=1e-5)
         assert np.allclose(np.sort(client_result["counts"], axis=0), np.array([3, 4]), rtol=1e-5)
         
+        # Appliquer les updates
+        model2.apply_updates(Vector.build(client_result))
+        assert np.allclose(np.sort(model2.centroids, axis=0), np.array([[0.5], [6.6]]), rtol=1e-5)
+        
         # Refait kmeans pour voir si ça converge
         # Supposés être 1.33 et 7.5 (ça a convergé)
         client_result = model2.compute_kmeans(data, None, client=True)
@@ -77,8 +81,8 @@ class TestFKMeansModel(ModelTestSuite):
     """ Test ok"""
     def test_fkm_server_normal(self):
         ###### Test 3 : Kmeans classique (poids = 1) coté serveur ######## OK !
-        cluster1 = np.array([[0], [1], [3]]) # Centroid 1 = [1.33]
-        cluster2 = np.array([[5], [6], [9], [10]]) # Centroid 2 = [7.5]
+        cluster1 = np.array([[0], [1], [2]]) # Centroid 1 = [1.]
+        cluster2 = np.array([[7], [8], [9], [10]]) # Centroid 2 = [7.5]
         data = np.vstack([cluster1, cluster2])
         data = data.astype(np.float64) 
 
@@ -89,7 +93,7 @@ class TestFKMeansModel(ModelTestSuite):
         model2.initialize({"features_shape": (1,)})
         weights = np.ones(data.shape[0])
         client_result = model2.compute_kmeans(data, weights, client=False)
-        assert np.allclose(np.sort(client_result["centroids"], axis=0), np.array([[1.33333], [7.5]]), rtol=1e-5)
+        assert np.allclose(np.sort(client_result["centroids"], axis=0), np.array([[1], [8.5]]), rtol=1e-5)
         assert np.allclose(np.sort(client_result["counts"], axis=0), np.array([1, 1]), rtol=1e-5)
     
     """ Test ok"""
