@@ -46,7 +46,7 @@ class KMeansInitRequest(Message):
 class KMeansInitReply(Message):
     """Client-emitted message indicating that initialization went fine."""
     typekey = "kmeans_init_reply"
-    cluster_means: List[Vector]
+    cluster_means: Vector
     sample_counts: List[int]
 
 
@@ -62,13 +62,13 @@ class KMeansStopTraining(Message):
 class KMeansTrainRequest(Message):
     """Server-emitted request to participate in a training round."""
     typekey = "kmeans_train_request"
-    centroids: List[Vector]
+    centroids: Vector
     round_i: int
 
 @dataclasses.dataclass
 class KMeansTrainReply(Message):
     """Client-emitted results from a local training round."""
     typekey = "kmeans_train_reply"
-    cluster_means: List[Vector]
+    cluster_means: Vector
     sample_counts: List[int]
 

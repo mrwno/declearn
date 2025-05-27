@@ -47,7 +47,6 @@ class TestFKMeansModel(ModelTestSuite):
         # Appliquer les updates
         model2.apply_updates(Vector.build(client_result))
         assert np.allclose(np.sort(model2.centroids, axis=0), np.array([[0.5], [6.6]]), rtol=1e-5)
-        
         # Refait kmeans pour voir si ça converge
         # Supposés être 1.33 et 7.5 (ça a convergé)
         client_result = model2.compute_kmeans(data, None, client=True)

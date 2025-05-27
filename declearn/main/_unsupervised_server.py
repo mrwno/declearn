@@ -246,8 +246,8 @@ class UnsupervisedFederatedServer:
             centroids = reply.cluster_means.coefs["centroids"]
             all_centroids.extend(centroids)
             all_counts.extend(reply.sample_counts)
-        all_centroids_vector = Vector.build({"centroids" :np.array(all_centroids)})
-        self.all_centroids = all_centroids_vector
+        #all_centroids_vector = Vector.build({"centroids" :np.array(all_centroids)})
+        self.all_centroids = all_centroids
         self.all_counts = all_counts
         
         self.logger.info("Initialization was successful.")
@@ -397,9 +397,11 @@ class UnsupervisedFederatedServer:
         round_i: int
             Index of the training round.
         """
+        result = self.model.compute_kmeans(self.all_centroids, weights = self.all_counts, client = False)
+
         # Create message that contains centroids.
         msg_light = messaging.KMeansTrainRequest( 
-            centroids=self.model.get_weights(), 
+            centroids=Vector.build({"centroids": result["centroids"]}), 
             round_i=round_i,
         )
         # Send it to clients, sparingly joining model weights.
@@ -416,18 +418,14 @@ class UnsupervisedFederatedServer:
         results: dict[str, KMeansTrainReply]
             Client-wise KMeansTrainReply message sent after a training round.
         """
-        self.all_centroids = []
-        self.all_counts = []
-        # Aggregate the client-wise results.
-        for client, reply in results.items():
-            self.all_centroids.extend([centroid.coefs["centroid"] for centroid in reply.cluster_means])
-            self.all_counts.extend(reply.sample_counts)
-        try:
-            result = self.model.compute_kmeans(self.all_centroids, self.all_counts, False)
-        except Exception as exc:
-            self.logger.error("Compute Kmeans failed: %s", exc)
-            raise
-        self.model.set_weights(Vector.build({"centroid": result["centroids"]}))
+        all_centroids = []
+        all_counts = []
+        for reply in results.values():
+            centroids = reply.cluster_means.coefs["centroids"]
+            all_centroids.extend(centroids)
+            all_counts.extend(reply.sample_counts)
+        self.all_centroids = all_centroids
+        self.all_counts = all_counts
         
 
     async def stop_training(
