@@ -18,31 +18,25 @@
 """Server-side main Unsupervised Federated Learning orchestrating class."""
 
 import asyncio
-import copy
-import dataclasses
 import logging
 from typing import (
     # fmt: off
-    Any, Dict, List, Mapping, Optional, Set, Tuple, Type, TypeVar, Union
+    Any, Dict, Set, Type, TypeVar, Union
 )
-
 import numpy as np
 
 from declearn import messaging
 from declearn.communication import NetworkServerConfig
 from declearn.communication.api import NetworkServer
 from declearn.main.config import (
-    FLOptimConfig,
     FLRunConfig,
-    TrainingConfig,
 )
 from declearn.main.utils import (
     AggregationError,
     aggregate_clients_data_info,
 )
-from declearn.metrics import MetricInputType, MetricSet
 from declearn.model.api import Model, Vector
-from declearn.utils import deserialize_object, get_logger
+from declearn.utils import get_logger
 from declearn.model.kmeans import FederatedKMeansModel
 
 

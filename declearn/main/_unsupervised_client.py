@@ -20,8 +20,6 @@
 import asyncio
 import dataclasses
 import logging
-import os
-import warnings
 from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
@@ -34,7 +32,7 @@ from declearn.communication.utils import (
 )
 from declearn.model.api import Vector
 from declearn.dataset import Dataset
-from declearn.messaging import Message, SerializedMessage
+from declearn.messaging import SerializedMessage
 #from declearn.training import UnsupervisedTrainingManager
 from declearn.model.kmeans import FederatedKMeansModel
 from declearn.utils import LOGGING_LEVEL_MAJOR, get_logger
