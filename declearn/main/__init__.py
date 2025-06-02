@@ -47,3 +47,5 @@ from . import utils
 from . import config
 from ._client import FederatedClient
 from ._server import FederatedServer
+from ._unsupervised_client import UnsupervisedFederatedClient
+from ._unsupervised_server import UnsupervisedFederatedServer
