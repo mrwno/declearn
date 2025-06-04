@@ -18,31 +18,12 @@
 """Wrapper to run local training and evaluation rounds in a unsupervised FL process."""
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple, Union
-import time
-
-import numpy as np
-import tqdm
+from typing import Union
 
 from declearn import messaging
-from declearn.aggregator import Aggregator
 from declearn.dataset import Dataset
-from declearn.metrics import (
-    MeanMetric,
-    Metric,
-    MetricInputType,
-    MetricSet,
-    MetricState,
-)
 from declearn.model.api import Model
-from declearn.optimizer import Optimizer
-from declearn.training._constraints import (
-    Constraint,
-    ConstraintSet,
-    TimeoutConstraint,
-)
-from declearn.typing import Batch
-from declearn.utils import LOGGING_LEVEL_MAJOR, get_logger
+from declearn.utils import get_logger
 
 __all__ = [
     "UnsupervisedTrainingManager",
@@ -51,8 +32,6 @@ __all__ = [
 
 class UnsupervisedTrainingManager:
     """Class wrapping the logic for local training and evaluation rounds."""
-
-    # one too-many attribute; pylint: disable=too-many-instance-attributes
 
     def __init__(
         self,
@@ -87,8 +66,8 @@ class UnsupervisedTrainingManager:
 
     def training_round(
         self,
-        message: messaging.TrainRequest,
-    ) -> Union[messaging.TrainReply, messaging.Error]:
+        message: messaging.KMeansTrainRequest,
+    ) -> Union[messaging.KMeansTrainReply, messaging.Error]:
         """Run a local training round.
 
         If an exception is raised during the local process, wrap it as
@@ -96,12 +75,12 @@ class UnsupervisedTrainingManager:
 
         Parameters
         ----------
-        message: TrainRequest
+        message: KMeansTrainRequest
             Instructions from the server regarding the training round.
 
         Returns
         -------
-        reply: TrainReply or Error
+        reply: KMeansTrainReply or Error
             Message wrapping results from the training round, or any
             error raised during it.
         """
@@ -118,34 +97,25 @@ class UnsupervisedTrainingManager:
 
     def _training_round(
         self,
-        message: messaging.TrainRequest,
-    ) -> messaging.TrainReply:
+        message: messaging.KMeansTrainRequest,
+    ) -> messaging.KMeansTrainReply:
         """Backend to `training_round`, without exception capture hooks."""
-        # Unpack and apply model weights and optimizer auxiliary variables.
-
-        start_time = time.time()
 
         self.logger.info("Applying server updates to local objects.")
-        # Line 13 of the FKM paper
-        if message.weights is not None:
-           self.model.set_weights(message.weights, trainable=True) #remplace les centroides du modele par ceux du message
-        
-        # Line 14 of the FKM paper
-        updates = self.model.local_kmeans_iteration(self.train_data)
-
-        # Train under instructed effort constraints.
-        params = message.n_epoch, message.n_steps, message.timeout
-        self.logger.info(
-            "Training local model for %s epochs | %s steps | %s seconds.",
-            *params,
+        self.model.set_weights(message.centroids)
+        result = self.model.compute_kmeans(
+            self.train_data,
+            None,
+            True
         )
-        
-        t_spent = time.time() - start_time
-        # Wrap them as a TrainReply together with effort metadata and return.
-        return messaging.TrainReply(
-            updates=updates,
-            aux_var={},
-            n_epoch=1,
-            n_steps=1,
-            t_spent=round(t_spent, 3),
+
+        self.model.set_weights(result["centroids"])
+        self.logger.info(
+            "Training round %s completed",
+            message.round_i,
+        )
+       
+        return messaging.KMeansTrainReply(
+            cluster_means=result["centroids"],
+            sample_counts=result["counts"],
         )

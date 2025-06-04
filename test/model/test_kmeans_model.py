@@ -93,6 +93,7 @@ class TestFKMeansModel(ModelTestSuite):
         """Sample centroids for testing."""
         return np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
     
+    """ Hand-written tests for FederatedKMeansModel. These tests do not use fixtures"""
     def test_fkm_client_normal(
         self
     ) -> None:
@@ -183,7 +184,8 @@ class TestFKMeansModel(ModelTestSuite):
         assert np.allclose(np.sort(client_result["centroids"], axis=0), np.array([[0.33333333], [7.5]]), rtol=1e-5)
         assert np.allclose(np.sort(client_result["counts"], axis=0), np.array([1, 1]), rtol=1e-5)
         return None
-
+    
+    """ Those tests are using the fixtures defined above."""
     def test_model_initialization(
         self, 
         model: FederatedKMeansModel,

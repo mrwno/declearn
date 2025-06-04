@@ -1,10 +1,12 @@
 # coding: utf-8
+# AI generated file
+"""Demonstration script using the Blobs dataset."""
 
 import os
 import tempfile
 from typing import Literal, Optional
 
-import fire
+import fire # type: ignore
 from declearn.test_utils import generate_ssl_certificates, make_importable
 from declearn.utils import run_as_processes
 
@@ -37,13 +39,11 @@ def run_demo(
     with tempfile.TemporaryDirectory() as folder:
         ca_cert, sv_cert, sv_pkey = generate_ssl_certificates(folder)
         
-        # Server configuration
         server = (run_server, (nb_clients,), {
             "certificate": sv_cert, 
             "private_key": sv_pkey
         })
         
-        # Client configurations
         client_kwargs = {
             "data_folder": data_folder, "ca_cert": ca_cert, "verbose": False
         }
@@ -52,7 +52,6 @@ def run_demo(
             for idx in range(nb_clients)
         ]
         
-        # Run processes
         success, outp = run_as_processes(server, *clients)
         if not success:
             raise RuntimeError(
